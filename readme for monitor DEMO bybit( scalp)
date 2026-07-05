@@ -36,8 +36,8 @@ TP2_MULTIPLIER	3.0	Множитель ATR для TP2.
 Настройки торговли:
 
 Название	Значение	Что отвечает
-API_KEY	"V2uY8gR5IFL7ZrOhWd"	API-ключ для доступа к демо-счёту.
-API_SECRET	"cF8lXlhEWMFF7TifY0kMy52DuaLicvbkwQH2"	Секретный ключ.
+API_KEY	"0"	API-ключ для доступа к демо-счёту.
+API_SECRET	"00"	Секретный ключ.
 CATEGORY	"linear"	Тип торговли (фьючерсы).
 LEVERAGE	3	Плечо (не используется в демо, оставлено).
 COMMISSION	0.00055 (0.055%)	Комиссия за сделку (вход + выход).
