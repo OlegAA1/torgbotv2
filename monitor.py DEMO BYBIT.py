@@ -30,8 +30,8 @@ TP1_MULTIPLIER = 2.0
 TP2_MULTIPLIER = 3.0
 
 # ===== НАСТРОЙКИ ТОРГОВЛИ (ДЕМО) =====
-API_KEY = "V2uY8gR5IFL7ZrOhWd"            # ЗАМЕНИ НА СВОЙ
-API_SECRET = "cF8lXlhEWMFF7TifY0kMy52DuaLicvbkwQH2"      # ЗАМЕНИ НА СВОЙ
+API_KEY = "0000"            # ЗАМЕНИ НА СВОЙ
+API_SECRET = "00000"      # ЗАМЕНИ НА СВОЙ
 CATEGORY = "linear"                       # "linear" для фьючерсов
 LEVERAGE = 3                              # плечо (не используется)
 COMMISSION = 0.00055                      # 0.055% комиссия за сделку (вход+выход)
