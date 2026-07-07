@@ -88,7 +88,8 @@ STATS_HEADERS = [
     "timestamp_close", "exit_price", "gross_pnl_pct", "result",
     "commission_usdt", "net_pnl_pct",
     "score", "ema20_entry", "ema50_entry", "ema200_entry",
-    "macd_entry", "signal_entry", "tf_consensus"
+    "macd_entry", "signal_entry", "tf_consensus",
+    "sl", "tp", "expected_gain_pct", "expected_loss_pct"
 ]
 
 def init_stats_csv():
@@ -161,6 +162,8 @@ def apply_adaptation(recommendation):
         f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - THRESHOLD_SCORE: {old_threshold:.1f} -> {new_threshold:.1f}, winrate: {recommendation.get('winrate', 0):.1f}%\n")
 
 # ---- Вспомогательные функции ----
+import json
+
 def fetch_klines(symbol, interval, limit, retries=3):
     if interval == 1440:
         interval_str = "D"
@@ -173,7 +176,20 @@ def fetch_klines(symbol, interval, limit, retries=3):
     for attempt in range(retries):
         try:
             resp = requests.get(url, params=params, timeout=10)
-            data = resp.json()
+            # Проверяем HTTP-статус
+            if resp.status_code != 200:
+                logger.warning(f"HTTP {resp.status_code} при запросе {symbol} ({interval}), попытка {attempt+1}/{retries}")
+                time.sleep(2 * (attempt + 1))
+                continue
+            # Пытаемся распарсить JSON
+            try:
+                data = resp.json()
+            except json.JSONDecodeError as e:
+                logger.warning(f"Ошибка парсинга JSON для {symbol} ({interval}), попытка {attempt+1}/{retries}: {e}")
+                # Логируем первые 200 символов ответа для диагностики
+                logger.debug(f"Ответ: {resp.text[:200]}")
+                time.sleep(2 * (attempt + 1))
+                continue
             if data['retCode'] == 0:
                 klines = data['result']['list']
                 klines.reverse()
@@ -184,7 +200,7 @@ def fetch_klines(symbol, interval, limit, retries=3):
         except requests.exceptions.RequestException as e:
             logger.warning(f"Ошибка запроса {symbol} ({interval}), попытка {attempt+1}/{retries}: {e}")
             if attempt < retries - 1:
-                time.sleep(5 * (attempt + 1))
+                time.sleep(2 * (attempt + 1))
             else:
                 logger.error(f"Не удалось выполнить запрос {symbol} ({interval}) после {retries} попыток")
                 return None
@@ -575,34 +591,37 @@ def get_last_price(symbol, tf=15):
         return float(data[0][4])
     return None
 
-def add_trade_open(symbol, side, entry_price, qty, score, consensus_tf, ema_values):
+def add_trade_open(symbol, side, entry_price, qty, score, consensus_tf, ema_values, sl, tp):
     global open_trades
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    # Расчёт ожидаемой прибыли/убытка
+    if side == "Buy":
+        expected_gain_pct = (tp - entry_price) / entry_price * 100
+        expected_loss_pct = (entry_price - sl) / entry_price * 100
+    else:
+        expected_gain_pct = (entry_price - tp) / entry_price * 100
+        expected_loss_pct = (sl - entry_price) / entry_price * 100
+
     open_trades[symbol] = {
         'timestamp_open': timestamp,
         'symbol': symbol,
         'side': side,
         'entry_price': entry_price,
         'qty': qty,
+        'sl': sl,
+        'tp': tp,
+        'expected_gain_pct': expected_gain_pct,
+        'expected_loss_pct': expected_loss_pct,
         'score': score,
         'consensus_tf': consensus_tf,
         'ema20': ema_values[0] if ema_values else None,
         'ema50': ema_values[1] if ema_values else None,
         'ema200': ema_values[2] if ema_values else None,
     }
-    with open(STATS_CSV, 'a', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f, delimiter=';')
-        writer.writerow([
-            timestamp, symbol, side, entry_price, qty,
-            "", "", "", "",
-            "", "",
-            round(score, 1) if score else "",
-            ema_values[0] if ema_values else "",
-            ema_values[1] if ema_values else "",
-            ema_values[2] if ema_values else "",
-            "", "", consensus_tf
-        ])
-    logger.info(f"Сделка открыта: {side} {symbol} по {entry_price}, qty={qty}, score={score:.1f}")
+    # Логируем с расширенной информацией
+    logger.info(f"СДЕЛКА ОТКРЫТА: {side} {symbol} | Вход {entry_price} | SL {sl} | TP {tp} | Ожидаемая прибыль {expected_gain_pct:.2f}% | Риск {expected_loss_pct:.2f}%")
+    trade_logger.info(f"ОТКРЫТИЕ: {side} {symbol} qty={qty} цена={entry_price} SL={sl} TP={tp} gain={expected_gain_pct:.1f}% loss={expected_loss_pct:.1f}%")
+    # CSV записывается только при закрытии, поэтому здесь убираем запись
 
 def close_trade(symbol, exit_price, score=None):
     global open_trades
@@ -612,6 +631,11 @@ def close_trade(symbol, exit_price, score=None):
     entry = trade['entry_price']
     side = trade['side']
     qty = trade['qty']
+    sl = trade['sl']
+    tp = trade['tp']
+    expected_gain = trade['expected_gain_pct']
+    expected_loss = trade['expected_loss_pct']
+
     if side == "Buy":
         gross_pnl = (exit_price - entry) * qty
     else:
@@ -622,25 +646,33 @@ def close_trade(symbol, exit_price, score=None):
     net_pnl_pct = (net_pnl / (entry * qty)) * 100
     result = "Win" if net_pnl > 0 else "Loss" if net_pnl < 0 else "Breakeven"
 
-    rows = []
-    if os.path.exists(STATS_CSV):
-        with open(STATS_CSV, 'r', newline='', encoding='utf-8') as f:
-            reader = csv.reader(f, delimiter=';')
-            rows = list(reader)
-        for i in range(len(rows)-1, -1, -1):
-            if len(rows[i]) >= 4 and rows[i][1] == symbol and rows[i][5] == "":
-                rows[i][5] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                rows[i][6] = str(exit_price)
-                rows[i][7] = str(round(gross_pnl_pct, 2))
-                rows[i][8] = result
-                rows[i][9] = str(round(commission_usdt, 2))
-                rows[i][10] = str(round(net_pnl_pct, 2))
-                if score is not None:
-                    rows[i][11] = str(round(score, 1))
-                break
-        with open(STATS_CSV, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f, delimiter=';')
-            writer.writerows(rows)
+    # Запись в CSV (дописываем новую строку)
+    with open(STATS_CSV, 'a', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f, delimiter=';')
+        writer.writerow([
+            trade['timestamp_open'],
+            symbol,
+            side,
+            entry,
+            qty,
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            exit_price,
+            round(gross_pnl_pct, 2),
+            result,
+            round(commission_usdt, 2),
+            round(net_pnl_pct, 2),
+            round(score, 1) if score else "",
+            trade.get('ema20', ""),
+            trade.get('ema50', ""),
+            trade.get('ema200', ""),
+            "", "",
+            trade.get('consensus_tf', ""),
+            round(sl, 2),
+            round(tp, 2),
+            round(expected_gain, 2),
+            round(expected_loss, 2)
+        ])
+
     del open_trades[symbol]
     logger.info(f"Сделка закрыта: {side} {symbol} результат {result} (валовая {gross_pnl_pct:.2f}%, чистая {net_pnl_pct:.2f}%, комиссия {commission_usdt:.2f} USDT)")
     update_stats()
@@ -797,7 +829,7 @@ def main_loop():
             if order_result:
                 pos_side = "Buy" if signal == "BUY" else "Sell"
                 set_stop_loss_take_profit(sym, pos_side, sl, tp)
-                add_trade_open(sym, side, entry_price, qty, diff, consensus_tf, ema_vals)
+                add_trade_open(sym, side, entry_price, qty, diff, consensus_tf, ema_vals, sl, tp)
                 if sym in last_sl_time:
                     del last_sl_time[sym]
             else:
