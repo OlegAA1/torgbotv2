@@ -12,7 +12,7 @@ from tinkoff.invest.utils import quotation_to_decimal
 
 
 # Токен песочницы
-TOKEN = "t.BwGdwCIiTgT2nZgetO7ZUfHe66LyXkzbWRoHxKoIh8UmHNVBPpD8eyeoGhFcpdt-qY4IzUspIp4REFjEvW4w3g"
+TOKEN = ""
 
 # FIGI для Сбербанка (пример)
 SBER_FIGI = "BBG004730N88"  # можно заменить после получения через instruments
