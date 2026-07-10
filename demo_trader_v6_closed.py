@@ -19,8 +19,9 @@ SYMBOLS = [
     "NEARUSDT", "ALGOUSDT", "VETUSDT", "ICPUSDT",
     "ETCUSDT", "XLMUSDT", "AAVEUSDT", "CRVUSDT"
 ]
-TIMEFRAMES = [5, 15, 30, 60, 240, 1440, 10080]   # добавлен 5 минут
+TIMEFRAMES = [15, 30, 60, 240, 1440, 10080]   # 5-минутный ТФ исключён из анализа
 ENTRY_TF = 15
+TRAILING_TF = 5                               # 5-минутный ТФ для трейлинга
 
 DOJI_THRESHOLD = 0.1
 HAMMER_THRESHOLD = 0.3
@@ -30,11 +31,11 @@ MACD_FAST = 12
 MACD_SLOW = 26
 MACD_SIGNAL = 9
 
-WEIGHT_MAP = {5: 1.0, 15: 1.0, 30: 1.5, 60: 2.0, 240: 3.0, 1440: 8.0, 10080: 10.0}
+WEIGHT_MAP = {15: 1.0, 30: 1.5, 60: 2.0, 240: 3.0, 1440: 8.0, 10080: 10.0}
 THRESHOLD_SCORE = 5.0
 
-API_KEY = ""
-API_SECRET = ""
+API_KEY = "ваш_api_key"
+API_SECRET = "ваш_api_secret"
 CATEGORY = "linear"
 COMMISSION = 0.00055
 RISK_PER_TRADE = 2.0
@@ -47,16 +48,15 @@ MIN_SL_PERCENT = 0.01
 SL_ATR_MULTIPLIER = 2.0
 MAX_TP_PERCENT = 3.0
 MAX_POSITION_USDT = 5000
-EMA_CLOSE_PROXIMITY = 0.015  # 1.5%
+EMA_CLOSE_PROXIMITY = 0.015  # 1.5% (проверяется только на ТФ из TIMEFRAMES)
 PENALTY_FOR_MACD_CONFLICT = 5
 
-# === НАСТРОЙКИ ДЛЯ ПЕРЕДВИЖЕНИЯ СТОП-ЛОССА (5-минутный ТФ) ===
+# === НАСТРОЙКИ ДЛЯ ПЕРЕДВИЖЕНИЯ СТОП-ЛОССА (на 5-минутном ТФ) ===
 TRAILING_STOP_ENABLED = True
-TRAILING_MIN_PROFIT_PCT = 1.5          # % прибыли для активации
-TRAILING_STEP_PCT = 0.5                # минимальное изменение для нового передвижения
+TRAILING_MIN_PROFIT_PCT = 2.0          # % прибыли для активации
+TRAILING_STEP_PCT = 0.5                # минимальный шаг передвижения
 TRAILING_USE_EMA50 = True              # если True – EMA50, иначе EMA20
-TRAILING_OFFSET_PCT = 0.3              # отступ от EMA в процентах
-TRAILING_TF = 5                        # таймфрейм для трейлинга (5 минут)
+TRAILING_OFFSET_PCT = 0.5              # отступ от EMA в процентах
 
 LOT_INFO = {
     "BTCUSDT": {"min": 0.001, "max": 100, "step": 0.001},
@@ -134,6 +134,7 @@ current_params = {
     'weights': WEIGHT_MAP.copy(),
 }
 
+# Основные хранилища для ТФ из TIMEFRAMES
 histories = {tf: {sym: {
     'open': deque(maxlen=250),
     'high': deque(maxlen=250),
@@ -142,7 +143,19 @@ histories = {tf: {sym: {
     'volume': deque(maxlen=250)
 } for sym in SYMBOLS} for tf in TIMEFRAMES}
 
+# Отдельное хранилище для 5-минутного ТФ (только для трейлинга)
+histories_5m = {sym: {
+    'open': deque(maxlen=250),
+    'high': deque(maxlen=250),
+    'low': deque(maxlen=250),
+    'close': deque(maxlen=250),
+    'volume': deque(maxlen=250)
+} for sym in SYMBOLS}
+
 prev_macd = {tf: {sym: {'macd': None, 'signal': None} for sym in SYMBOLS} for tf in TIMEFRAMES}
+# Для 5m тоже храним предыдущие значения MACD
+prev_macd_5m = {sym: {'macd': None, 'signal': None} for sym in SYMBOLS}
+
 last_completed_price = {}
 
 def calculate_ema(series, period):
@@ -241,8 +254,18 @@ def calculate_macd(close_list, fast=12, slow=26, signal=9):
     hist = macd_line - signal_line
     return macd_line, signal_line, hist
 
-def analyze_timeframe(symbol, tf, params):
-    data = histories[tf][symbol]
+def analyze_timeframe(symbol, tf, params, use_5m=False):
+    """
+    Анализирует данные для заданного ТФ.
+    Если use_5m=True, использует histories_5m (для трейлинга).
+    """
+    if use_5m:
+        data = histories_5m[symbol]
+        prev = prev_macd_5m[symbol]
+    else:
+        data = histories[tf][symbol]
+        prev = prev_macd[tf][symbol]
+
     if len(data['close']) < 2:
         return None
     open_price = list(data['open'])[-2]
@@ -262,14 +285,13 @@ def analyze_timeframe(symbol, tf, params):
 
     cross = None
     if macd_line is not None and signal_line is not None:
-        prev = prev_macd[tf][symbol]
         if prev['macd'] is not None and prev['signal'] is not None:
             if prev['macd'] <= prev['signal'] and macd_line > signal_line:
                 cross = "bullish"
             elif prev['macd'] >= prev['signal'] and macd_line < signal_line:
                 cross = "bearish"
-        prev_macd[tf][symbol]['macd'] = macd_line
-        prev_macd[tf][symbol]['signal'] = signal_line
+        prev['macd'] = macd_line
+        prev['signal'] = signal_line
 
     doji = detect_doji(open_price, close, high, low, params.get('doji_threshold', DOJI_THRESHOLD))
     hammer = detect_hammer(open_price, close, high, low, params.get('hammer_threshold', HAMMER_THRESHOLD))
@@ -292,10 +314,18 @@ def analyze_timeframe(symbol, tf, params):
         'close': close
     }
 
-def calculate_atr_for_tf(symbol, period=14, tf=15):
-    highs = list(histories[tf][symbol]['high'])[:-1]
-    lows = list(histories[tf][symbol]['low'])[:-1]
-    closes = list(histories[tf][symbol]['close'])[:-1]
+def get_5m_data(symbol, params):
+    """Получает данные для 5-минутного ТФ (для трейлинга)."""
+    return analyze_timeframe(symbol, 5, params, use_5m=True)
+
+def calculate_atr_for_tf(symbol, period=14, tf=15, use_5m=False):
+    if use_5m:
+        data = histories_5m[symbol]
+    else:
+        data = histories[tf][symbol]
+    highs = list(data['high'])[:-1]
+    lows = list(data['low'])[:-1]
+    closes = list(data['close'])[:-1]
     if len(closes) < period + 1:
         return None
     tr_list = []
@@ -312,7 +342,7 @@ def calculate_atr_for_tf(symbol, period=14, tf=15):
 def generate_signal(symbol, params):
     tf_data = {}
     for tf in TIMEFRAMES:
-        tf_data[tf] = analyze_timeframe(symbol, tf, params)
+        tf_data[tf] = analyze_timeframe(symbol, tf, params, use_5m=False)
 
     daily = tf_data.get(1440)
     weekly = tf_data.get(10080)
@@ -378,7 +408,7 @@ def generate_signal(symbol, params):
     else:
         return "NONE", None, None, diff, consensus_tf, None
 
-    # Фильтр близости к EMA на всех ТФ
+    # Фильтр близости к EMA на всех ТФ, кроме 5m (т.к. 5m нет в TIMEFRAMES)
     for tf, data in tf_data.items():
         if data is None:
             continue
@@ -395,7 +425,6 @@ def generate_signal(symbol, params):
                     logger.info(f"Запрет SELL {symbol}: цена {price} близка к {ema_name} {ema_value} на ТФ {tf} (расстояние {distance_pct*100:.2f}%)")
                     return "NONE", None, None, diff, consensus_tf, None
 
-    # Фильтр дневного тренда
     if direction == "BUY" and daily_above_ema50 and diff <= threshold + 3:
         return "NONE", None, None, diff, consensus_tf, None
     if direction == "SELL" and daily_below_ema50 and diff >= -threshold - 3:
@@ -446,7 +475,7 @@ def generate_signal(symbol, params):
         if (entry_price - tp) / entry_price < 0.005:
             tp = entry_price * 0.995
 
-    atr = calculate_atr_for_tf(symbol, 14, ENTRY_TF)
+    atr = calculate_atr_for_tf(symbol, 14, ENTRY_TF, use_5m=False)
     if atr is None:
         atr = entry_price * 0.01
     if direction == "BUY":
@@ -464,13 +493,7 @@ def generate_signal(symbol, params):
 
 # ---- Торговые функции ----
 def get_session():
-    return HTTP(
-        testnet=False,
-        demo=True,
-        api_key=API_KEY,
-        api_secret=API_SECRET,
-        recv_window=30000
-    )
+    return HTTP(testnet=False, demo=True, api_key=API_KEY, api_secret=API_SECRET, recv_window=30000)
 
 def get_balance_usdt():
     session = get_session()
@@ -721,8 +744,8 @@ def update_stats():
     winrate = wins / total * 100
     logger.info(f"📊 Статистика сделок: Всего {total}, Win {wins} ({winrate:.1f}%), Loss {losses}")
 
-# ---- Загрузка истории ----
-logger.info("Загрузка истории для всех ТФ (только завершённые свечи)...")
+# ---- Загрузка истории для основных ТФ ----
+logger.info("Загрузка истории для основных ТФ...")
 for tf in TIMEFRAMES:
     for sym in SYMBOLS:
         data = fetch_klines_completed(sym, tf, 250)
@@ -733,28 +756,40 @@ for tf in TIMEFRAMES:
                 histories[tf][sym]['low'].append(float(k[3]))
                 histories[tf][sym]['close'].append(float(k[4]))
                 histories[tf][sym]['volume'].append(float(k[5]))
-            logger.info(f"  {sym} ({tf}м): загружено {len(data)} завершённых свечей")
+            logger.info(f"  {sym} ({tf}м): загружено {len(data)} свечей")
         else:
             logger.warning(f"  {sym} ({tf}м): не удалось загрузить")
+
+# ---- Загрузка истории для 5-минутного ТФ (отдельно) ----
+logger.info("Загрузка истории для 5-минутного ТФ (трейлинг)...")
+for sym in SYMBOLS:
+    data = fetch_klines_completed(sym, TRAILING_TF, 250)
+    if data:
+        for k in data:
+            histories_5m[sym]['open'].append(float(k[1]))
+            histories_5m[sym]['high'].append(float(k[2]))
+            histories_5m[sym]['low'].append(float(k[3]))
+            histories_5m[sym]['close'].append(float(k[4]))
+            histories_5m[sym]['volume'].append(float(k[5]))
+        logger.info(f"  {sym} (5m): загружено {len(data)} свечей")
+    else:
+        logger.warning(f"  {sym} (5m): не удалось загрузить")
 
 # ---- Основной цикл ----
 def main_loop():
     global open_trades, last_sl_time, last_completed_price
-    logger.info(f"V6 Closed запущен (только закрытые свечи, трейлинг стопа на {TRAILING_TF}m EMA50).")
+    logger.info(f"V6 Closed запущен (трейлинг по 5-минутному ТФ).")
     last_update = {tf: 0 for tf in TIMEFRAMES}
     intervals = {
-        5: 30,          # 5m – каждые 30 секунд
-        15: 60,
-        30: 120,
-        60: 300,
-        240: 600,
-        1440: 3600,
-        10080: 21600
+        15: 60, 30: 120, 60: 300, 240: 600, 1440: 3600, 10080: 21600
     }
     last_candle_time = {tf: {sym: None for sym in SYMBOLS} for tf in TIMEFRAMES}
+    last_candle_time_5m = {sym: None for sym in SYMBOLS}
 
     while True:
         now = time.time()
+
+        # Обновляем основные ТФ
         for tf in TIMEFRAMES:
             if now - last_update[tf] < intervals.get(tf, 60):
                 continue
@@ -774,12 +809,26 @@ def main_loop():
                             last_completed_price[sym] = float(k[4])
             last_update[tf] = now
 
+        # Обновляем 5-минутный ТФ для трейлинга (обновляем каждую минуту)
+        for sym in SYMBOLS:
+            data = fetch_klines_completed(sym, TRAILING_TF, 1)
+            if data:
+                k = data[0]
+                candle_time = int(k[0])
+                if last_candle_time_5m[sym] != candle_time:
+                    histories_5m[sym]['open'].append(float(k[1]))
+                    histories_5m[sym]['high'].append(float(k[2]))
+                    histories_5m[sym]['low'].append(float(k[3]))
+                    histories_5m[sym]['close'].append(float(k[4]))
+                    histories_5m[sym]['volume'].append(float(k[5]))
+                    last_candle_time_5m[sym] = candle_time
+
+        # Обработка позиций
         for sym in SYMBOLS:
             has_pos = has_open_position(sym)
             if has_pos is None:
                 continue
 
-            # === Проверка закрытия позиции (если в open_trades есть, а в API нет) ===
             if sym in open_trades and not has_pos:
                 last_price = get_last_completed_price(sym, ENTRY_TF)
                 if last_price:
@@ -789,7 +838,6 @@ def main_loop():
                     logger.warning(f"Не удалось получить цену для закрытия {sym}")
                 continue
 
-            # === ОБРАБОТКА ОТКРЫТОЙ ПОЗИЦИИ (передвижение стоп-лосса по 5m) ===
             if sym in open_trades and has_pos:
                 trade = open_trades[sym]
                 entry = trade['entry_price']
@@ -805,33 +853,28 @@ def main_loop():
                         profit_pct = (entry - current_price) / entry * 100
 
                     if profit_pct >= TRAILING_MIN_PROFIT_PCT:
-                        tf_data = analyze_timeframe(sym, TRAILING_TF, current_params)
+                        # Используем 5-минутный ТФ для трейлинга
+                        tf_data = get_5m_data(sym, current_params)
                         if tf_data is not None:
                             ema_value = tf_data['ema50'] if TRAILING_USE_EMA50 else tf_data['ema20']
-                            # Проверяем MACD на разворот (опционально)
-                            macd_hist = tf_data['histogram'] if tf_data is not None else None
                             if ema_value is not None:
-                                # Базовое передвижение по EMA
                                 if side == "Buy":
                                     new_sl = ema_value * (1 - TRAILING_OFFSET_PCT / 100)
-                                    # Дополнительное условие: если MACD отрицательный (разворот вниз) – передвигаем
-                                    if macd_hist is not None and macd_hist < 0:
-                                        if new_sl > current_sl and new_sl < current_price:
-                                            if (new_sl - current_sl) / entry * 100 >= TRAILING_STEP_PCT:
-                                                set_stop_loss_take_profit(sym, "Buy", new_sl, current_tp)
-                                                open_trades[sym]['sl'] = new_sl
-                                                logger.info(f"Стоп-лосс {sym} передвинут на {new_sl:.4f} (EMA{50 if TRAILING_USE_EMA50 else 20} на {TRAILING_TF}m, MACD разворот, прибыль {profit_pct:.1f}%)")
-                                else:  # Sell
+                                    if new_sl > current_sl and new_sl < current_price:
+                                        if (new_sl - current_sl) / entry * 100 >= TRAILING_STEP_PCT:
+                                            set_stop_loss_take_profit(sym, "Buy", new_sl, current_tp)
+                                            open_trades[sym]['sl'] = new_sl
+                                            logger.info(f"Стоп-лосс {sym} передвинут на {new_sl:.4f} (EMA{50 if TRAILING_USE_EMA50 else 20} на 5m, прибыль {profit_pct:.1f}%)")
+                                else:
                                     new_sl = ema_value * (1 + TRAILING_OFFSET_PCT / 100)
-                                    if macd_hist is not None and macd_hist > 0:
-                                        if new_sl < current_sl and new_sl > current_price:
-                                            if (current_sl - new_sl) / entry * 100 >= TRAILING_STEP_PCT:
-                                                set_stop_loss_take_profit(sym, "Sell", new_sl, current_tp)
-                                                open_trades[sym]['sl'] = new_sl
-                                                logger.info(f"Стоп-лосс {sym} передвинут на {new_sl:.4f} (EMA{50 if TRAILING_USE_EMA50 else 20} на {TRAILING_TF}m, MACD разворот, прибыль {profit_pct:.1f}%)")
+                                    if new_sl < current_sl and new_sl > current_price:
+                                        if (current_sl - new_sl) / entry * 100 >= TRAILING_STEP_PCT:
+                                            set_stop_loss_take_profit(sym, "Sell", new_sl, current_tp)
+                                            open_trades[sym]['sl'] = new_sl
+                                            logger.info(f"Стоп-лосс {sym} передвинут на {new_sl:.4f} (EMA{50 if TRAILING_USE_EMA50 else 20} на 5m, прибыль {profit_pct:.1f}%)")
                 continue
 
-            # === ГЕНЕРАЦИЯ НОВОГО СИГНАЛА ===
+            # Генерация нового сигнала
             signal, tp, sl, diff, consensus_tf, ema_vals = generate_signal(sym, current_params)
             if signal == "NONE":
                 continue
