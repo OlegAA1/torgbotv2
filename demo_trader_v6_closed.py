@@ -47,9 +47,12 @@ RE_ENTRY_AFTER_SL = 3
 MIN_SL_PERCENT = 0.01
 SL_ATR_MULTIPLIER = 2.0
 MAX_TP_PERCENT = 3.0
-MAX_POSITION_USDT = 5000
+MAX_POSITION_USDT = 10000                      # ← увеличено до 10000
 EMA_CLOSE_PROXIMITY = 0.015  # 1.5% (проверяется только на ТФ из TIMEFRAMES)
 PENALTY_FOR_MACD_CONFLICT = 5
+
+# === ФИЛЬТР ПО МЛАДШИМ ТФ (30m, 1h) ===
+FILTER_MINOR_TF_MACD = True   # включить/выключить
 
 # === НАСТРОЙКИ ДЛЯ ПЕРЕДВИЖЕНИЯ СТОП-ЛОССА (на 5-минутном ТФ) ===
 TRAILING_STOP_ENABLED = True
@@ -407,6 +410,24 @@ def generate_signal(symbol, params):
         direction = "SELL"
     else:
         return "NONE", None, None, diff, consensus_tf, None
+
+    # === ФИЛЬТР ПО МЛАДШИМ ТФ (30m, 1h) ===
+    if FILTER_MINOR_TF_MACD:
+        minor_tfs = [30, 60]
+        if direction == "BUY":
+            for tf in minor_tfs:
+                data = tf_data.get(tf)
+                if data and data['macd_line'] is not None and data['signal_line'] is not None:
+                    if data['macd_line'] < 0 and data['macd_line'] < data['signal_line']:
+                        logger.info(f"Запрет BUY {symbol}: MACD на {tf}m медвежий (линия {data['macd_line']:.4f} < сигнала {data['signal_line']:.4f})")
+                        return "NONE", None, None, diff, consensus_tf, None
+        elif direction == "SELL":
+            for tf in minor_tfs:
+                data = tf_data.get(tf)
+                if data and data['macd_line'] is not None and data['signal_line'] is not None:
+                    if data['macd_line'] > 0 and data['macd_line'] > data['signal_line']:
+                        logger.info(f"Запрет SELL {symbol}: MACD на {tf}m бычий (линия {data['macd_line']:.4f} > сигнала {data['signal_line']:.4f})")
+                        return "NONE", None, None, diff, consensus_tf, None
 
     # Фильтр близости к EMA на всех ТФ, кроме 5m (т.к. 5m нет в TIMEFRAMES)
     for tf, data in tf_data.items():
@@ -778,7 +799,7 @@ for sym in SYMBOLS:
 # ---- Основной цикл ----
 def main_loop():
     global open_trades, last_sl_time, last_completed_price
-    logger.info(f"V6 Closed запущен (трейлинг по 5-минутному ТФ).")
+    logger.info(f"V6 Closed запущен (трейлинг по 5-минутному ТФ, фильтр младших ТФ включён).")
     last_update = {tf: 0 for tf in TIMEFRAMES}
     intervals = {
         15: 60, 30: 120, 60: 300, 240: 600, 1440: 3600, 10080: 21600
@@ -916,7 +937,7 @@ def main_loop():
             side = "Buy" if signal == "BUY" else "Sell"
             if USE_LIMIT_ORDERS:
                 offset = entry_price * (LIMIT_OFFSET_PERCENT / 100)
-                limit_price = round(entry_price - offset, 2) if side == "Buy" else round(entry_price + offset, 2)
+                limit_price = round(entry_price - offset, 4) if side == "Buy" else round(entry_price + offset, 4)
                 risk_pct = abs(sl - entry_price) / entry_price * 100
                 logger.info(f"РАСЧЁТ: {side} {sym} | Вход {entry_price} | SL {sl} | TP {tp} | Прибыль {expected_pct:.2f}% | Риск {risk_pct:.2f}%")
                 logger.info(f"Попытка открыть {side} {sym} лимит по {limit_price} (текущая {current_price}, qty={qty})")
