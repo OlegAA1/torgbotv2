@@ -47,19 +47,20 @@ RE_ENTRY_AFTER_SL = 3
 MIN_SL_PERCENT = 0.01
 SL_ATR_MULTIPLIER = 2.0
 MAX_TP_PERCENT = 3.0
-MAX_POSITION_USDT = 10000                      # ← увеличено до 10000
-EMA_CLOSE_PROXIMITY = 0.015  # 1.5% (проверяется только на ТФ из TIMEFRAMES)
+MAX_POSITION_USDT = 10000                      # лимит позиции
+EMA_CLOSE_PROXIMITY = 0.015
 PENALTY_FOR_MACD_CONFLICT = 5
+MIN_RISK_REWARD_RATIO = 1.5                    # минимальное соотношение риск/прибыль
 
 # === ФИЛЬТР ПО МЛАДШИМ ТФ (30m, 1h) ===
-FILTER_MINOR_TF_MACD = True   # включить/выключить
+FILTER_MINOR_TF_MACD = True
 
 # === НАСТРОЙКИ ДЛЯ ПЕРЕДВИЖЕНИЯ СТОП-ЛОССА (на 5-минутном ТФ) ===
 TRAILING_STOP_ENABLED = True
-TRAILING_MIN_PROFIT_PCT = 2.0          # % прибыли для активации
-TRAILING_STEP_PCT = 0.5                # минимальный шаг передвижения
-TRAILING_USE_EMA50 = True              # если True – EMA50, иначе EMA20
-TRAILING_OFFSET_PCT = 0.5              # отступ от EMA в процентах
+TRAILING_MIN_PROFIT_PCT = 2.0
+TRAILING_STEP_PCT = 0.5
+TRAILING_USE_EMA50 = True
+TRAILING_OFFSET_PCT = 0.5
 
 LOT_INFO = {
     "BTCUSDT": {"min": 0.001, "max": 100, "step": 0.001},
@@ -137,7 +138,6 @@ current_params = {
     'weights': WEIGHT_MAP.copy(),
 }
 
-# Основные хранилища для ТФ из TIMEFRAMES
 histories = {tf: {sym: {
     'open': deque(maxlen=250),
     'high': deque(maxlen=250),
@@ -146,7 +146,6 @@ histories = {tf: {sym: {
     'volume': deque(maxlen=250)
 } for sym in SYMBOLS} for tf in TIMEFRAMES}
 
-# Отдельное хранилище для 5-минутного ТФ (только для трейлинга)
 histories_5m = {sym: {
     'open': deque(maxlen=250),
     'high': deque(maxlen=250),
@@ -156,9 +155,7 @@ histories_5m = {sym: {
 } for sym in SYMBOLS}
 
 prev_macd = {tf: {sym: {'macd': None, 'signal': None} for sym in SYMBOLS} for tf in TIMEFRAMES}
-# Для 5m тоже храним предыдущие значения MACD
 prev_macd_5m = {sym: {'macd': None, 'signal': None} for sym in SYMBOLS}
-
 last_completed_price = {}
 
 def calculate_ema(series, period):
@@ -258,10 +255,6 @@ def calculate_macd(close_list, fast=12, slow=26, signal=9):
     return macd_line, signal_line, hist
 
 def analyze_timeframe(symbol, tf, params, use_5m=False):
-    """
-    Анализирует данные для заданного ТФ.
-    Если use_5m=True, использует histories_5m (для трейлинга).
-    """
     if use_5m:
         data = histories_5m[symbol]
         prev = prev_macd_5m[symbol]
@@ -318,7 +311,6 @@ def analyze_timeframe(symbol, tf, params, use_5m=False):
     }
 
 def get_5m_data(symbol, params):
-    """Получает данные для 5-минутного ТФ (для трейлинга)."""
     return analyze_timeframe(symbol, 5, params, use_5m=True)
 
 def calculate_atr_for_tf(symbol, period=14, tf=15, use_5m=False):
@@ -411,7 +403,7 @@ def generate_signal(symbol, params):
     else:
         return "NONE", None, None, diff, consensus_tf, None
 
-    # === ФИЛЬТР ПО МЛАДШИМ ТФ (30m, 1h) ===
+    # Фильтр по младшим ТФ (30m, 1h)
     if FILTER_MINOR_TF_MACD:
         minor_tfs = [30, 60]
         if direction == "BUY":
@@ -419,17 +411,17 @@ def generate_signal(symbol, params):
                 data = tf_data.get(tf)
                 if data and data['macd_line'] is not None and data['signal_line'] is not None:
                     if data['macd_line'] < 0 and data['macd_line'] < data['signal_line']:
-                        logger.info(f"Запрет BUY {symbol}: MACD на {tf}m медвежий (линия {data['macd_line']:.4f} < сигнала {data['signal_line']:.4f})")
+                        logger.info(f"Запрет BUY {symbol}: MACD на {tf}m медвежий")
                         return "NONE", None, None, diff, consensus_tf, None
         elif direction == "SELL":
             for tf in minor_tfs:
                 data = tf_data.get(tf)
                 if data and data['macd_line'] is not None and data['signal_line'] is not None:
                     if data['macd_line'] > 0 and data['macd_line'] > data['signal_line']:
-                        logger.info(f"Запрет SELL {symbol}: MACD на {tf}m бычий (линия {data['macd_line']:.4f} > сигнала {data['signal_line']:.4f})")
+                        logger.info(f"Запрет SELL {symbol}: MACD на {tf}m бычий")
                         return "NONE", None, None, diff, consensus_tf, None
 
-    # Фильтр близости к EMA на всех ТФ, кроме 5m (т.к. 5m нет в TIMEFRAMES)
+    # Фильтр близости к EMA на всех ТФ, кроме 5m
     for tf, data in tf_data.items():
         if data is None:
             continue
@@ -440,10 +432,10 @@ def generate_signal(symbol, params):
             distance_pct = abs(price - ema_value) / ema_value
             if distance_pct < EMA_CLOSE_PROXIMITY:
                 if direction == "BUY" and price < ema_value:
-                    logger.info(f"Запрет BUY {symbol}: цена {price} близка к {ema_name} {ema_value} на ТФ {tf} (расстояние {distance_pct*100:.2f}%)")
+                    logger.info(f"Запрет BUY {symbol}: цена {price} близка к {ema_name} на ТФ {tf}")
                     return "NONE", None, None, diff, consensus_tf, None
                 elif direction == "SELL" and price > ema_value:
-                    logger.info(f"Запрет SELL {symbol}: цена {price} близка к {ema_name} {ema_value} на ТФ {tf} (расстояние {distance_pct*100:.2f}%)")
+                    logger.info(f"Запрет SELL {symbol}: цена {price} близка к {ema_name} на ТФ {tf}")
                     return "NONE", None, None, diff, consensus_tf, None
 
     if direction == "BUY" and daily_above_ema50 and diff <= threshold + 3:
@@ -451,10 +443,10 @@ def generate_signal(symbol, params):
     if direction == "SELL" and daily_below_ema50 and diff >= -threshold - 3:
         return "NONE", None, None, diff, consensus_tf, None
 
-    # Расчёт TP
+    # Расчёт TP (исключаем 15m, используем только 30m, 1h, 4h, D1, W1)
     all_levels = []
     for tf, data in tf_data.items():
-        if data is None:
+        if data is None or tf == 15:  # исключаем 15m
             continue
         for ema_name, ema_value in [('ema20', data['ema20']), ('ema50', data['ema50']), ('ema200', data['ema200'])]:
             if ema_value is not None:
@@ -471,7 +463,6 @@ def generate_signal(symbol, params):
         if levels_above:
             levels_above.sort(key=lambda x: x[2] - entry_price)
             tp = levels_above[0][2]
-            logger.info(f"TP для {symbol} (BUY): ближайший уровень {levels_above[0][1]} на ТФ {levels_above[0][0]} = {tp}")
         else:
             tp = entry_price * 1.02
     else:
@@ -479,10 +470,10 @@ def generate_signal(symbol, params):
         if levels_below:
             levels_below.sort(key=lambda x: entry_price - x[2])
             tp = levels_below[0][2]
-            logger.info(f"TP для {symbol} (SELL): ближайший уровень {levels_below[0][1]} на ТФ {levels_below[0][0]} = {tp}")
         else:
             tp = entry_price * 0.98
 
+    # Ограничиваем TP
     if direction == "BUY":
         max_tp = entry_price * (1 + MAX_TP_PERCENT / 100)
         if tp > max_tp:
@@ -496,6 +487,7 @@ def generate_signal(symbol, params):
         if (entry_price - tp) / entry_price < 0.005:
             tp = entry_price * 0.995
 
+    # Расчёт SL
     atr = calculate_atr_for_tf(symbol, 14, ENTRY_TF, use_5m=False)
     if atr is None:
         atr = entry_price * 0.01
@@ -508,11 +500,22 @@ def generate_signal(symbol, params):
         if (sl - entry_price) / entry_price < MIN_SL_PERCENT:
             sl = entry_price * (1 + MIN_SL_PERCENT)
 
+    # === ФИЛЬТР ПО СООТНОШЕНИЮ РИСК/ПРИБЫЛЬ ===
+    if direction == "BUY":
+        reward = (tp - entry_price) / entry_price * 100
+        risk = (entry_price - sl) / entry_price * 100
+    else:
+        reward = (entry_price - tp) / entry_price * 100
+        risk = (sl - entry_price) / entry_price * 100
+    if reward < risk * MIN_RISK_REWARD_RATIO:
+        logger.info(f"Запрет {direction} {symbol}: соотношение риск/прибыль {reward:.2f}/{risk:.2f} = {reward/risk:.2f} < {MIN_RISK_REWARD_RATIO}")
+        return "NONE", None, None, diff, consensus_tf, None
+
     ema_vals = (daily['ema20'] if daily else None, daily['ema50'] if daily else None, daily['ema200'] if daily else None)
 
     return direction, tp, sl, diff, consensus_tf, ema_vals
 
-# ---- Торговые функции ----
+# ---- Торговые функции (без изменений) ----
 def get_session():
     return HTTP(testnet=False, demo=True, api_key=API_KEY, api_secret=API_SECRET, recv_window=30000)
 
@@ -765,7 +768,7 @@ def update_stats():
     winrate = wins / total * 100
     logger.info(f"📊 Статистика сделок: Всего {total}, Win {wins} ({winrate:.1f}%), Loss {losses}")
 
-# ---- Загрузка истории для основных ТФ ----
+# ---- Загрузка истории ----
 logger.info("Загрузка истории для основных ТФ...")
 for tf in TIMEFRAMES:
     for sym in SYMBOLS:
@@ -781,7 +784,6 @@ for tf in TIMEFRAMES:
         else:
             logger.warning(f"  {sym} ({tf}м): не удалось загрузить")
 
-# ---- Загрузка истории для 5-минутного ТФ (отдельно) ----
 logger.info("Загрузка истории для 5-минутного ТФ (трейлинг)...")
 for sym in SYMBOLS:
     data = fetch_klines_completed(sym, TRAILING_TF, 250)
@@ -799,7 +801,7 @@ for sym in SYMBOLS:
 # ---- Основной цикл ----
 def main_loop():
     global open_trades, last_sl_time, last_completed_price
-    logger.info(f"V6 Closed запущен (трейлинг по 5-минутному ТФ, фильтр младших ТФ включён).")
+    logger.info(f"V6 Closed запущен (трейлинг по 5m, фильтр RR {MIN_RISK_REWARD_RATIO})")
     last_update = {tf: 0 for tf in TIMEFRAMES}
     intervals = {
         15: 60, 30: 120, 60: 300, 240: 600, 1440: 3600, 10080: 21600
@@ -809,8 +811,6 @@ def main_loop():
 
     while True:
         now = time.time()
-
-        # Обновляем основные ТФ
         for tf in TIMEFRAMES:
             if now - last_update[tf] < intervals.get(tf, 60):
                 continue
@@ -830,7 +830,6 @@ def main_loop():
                             last_completed_price[sym] = float(k[4])
             last_update[tf] = now
 
-        # Обновляем 5-минутный ТФ для трейлинга (обновляем каждую минуту)
         for sym in SYMBOLS:
             data = fetch_klines_completed(sym, TRAILING_TF, 1)
             if data:
@@ -844,7 +843,6 @@ def main_loop():
                     histories_5m[sym]['volume'].append(float(k[5]))
                     last_candle_time_5m[sym] = candle_time
 
-        # Обработка позиций
         for sym in SYMBOLS:
             has_pos = has_open_position(sym)
             if has_pos is None:
@@ -874,7 +872,6 @@ def main_loop():
                         profit_pct = (entry - current_price) / entry * 100
 
                     if profit_pct >= TRAILING_MIN_PROFIT_PCT:
-                        # Используем 5-минутный ТФ для трейлинга
                         tf_data = get_5m_data(sym, current_params)
                         if tf_data is not None:
                             ema_value = tf_data['ema50'] if TRAILING_USE_EMA50 else tf_data['ema20']
@@ -895,7 +892,6 @@ def main_loop():
                                             logger.info(f"Стоп-лосс {sym} передвинут на {new_sl:.4f} (EMA{50 if TRAILING_USE_EMA50 else 20} на 5m, прибыль {profit_pct:.1f}%)")
                 continue
 
-            # Генерация нового сигнала
             signal, tp, sl, diff, consensus_tf, ema_vals = generate_signal(sym, current_params)
             if signal == "NONE":
                 continue
@@ -922,7 +918,7 @@ def main_loop():
             else:
                 expected_pct = (entry_price - tp) / entry_price * 100
             if expected_pct <= COMMISSION * 2 * 100:
-                logger.info(f"{sym} пропущен: ожидаемая прибыль {expected_pct:.2f}% <= комиссии {COMMISSION*2*100:.2f}%")
+                logger.info(f"{sym} пропущен: ожидаемая прибыль {expected_pct:.2f}% <= комиссии")
                 continue
 
             qty = calculate_position_size(sym, entry_price, sl)
@@ -931,7 +927,7 @@ def main_loop():
                 continue
             info = LOT_INFO.get(sym, {"min": 0.001, "max": 1000})
             if qty < info["min"] or qty > info["max"]:
-                logger.warning(f"{sym} пропущен: qty={qty} вне диапазона [{info['min']}, {info['max']}]")
+                logger.warning(f"{sym} пропущен: qty={qty} вне диапазона")
                 continue
 
             side = "Buy" if signal == "BUY" else "Sell"
