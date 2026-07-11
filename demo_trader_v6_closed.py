@@ -34,8 +34,8 @@ MACD_SIGNAL = 9
 WEIGHT_MAP = {15: 1.0, 30: 1.5, 60: 2.0, 240: 3.0, 1440: 8.0, 10080: 10.0}
 THRESHOLD_SCORE = 5.0
 
-API_KEY = "ваш_api_key"
-API_SECRET = "ваш_api_secret"
+API_KEY = ""
+API_SECRET = ""
 CATEGORY = "linear"
 COMMISSION = 0.00055
 RISK_PER_TRADE = 2.0
